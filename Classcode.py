@@ -6,9 +6,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-# ════════════════════════════════════════════
-# 0. PAGE + CLEAR
-# ════════════════════════════════════════════
+# ═════════════════════ 0. PAGE + CLEAR ═════════════════════
 st.set_page_config(page_title="Classification Code", page_icon="🧩", layout="wide")
 
 
@@ -23,9 +21,7 @@ with clear_col:
 with title_col:
     st.title("🧩 Classification Code")
 
-# ════════════════════════════════════════════
-# 1. OUTILS
-# ════════════════════════════════════════════
+# ═════════════════════ 1. OUTILS ═════════════════════
 def read_any(file):
     """Lit un CSV ou Excel (retourne DataFrame ou None)."""
     name = file.name.lower()
@@ -58,11 +54,11 @@ def concat_files(files):
 
     big = pd.concat(dfs, ignore_index=True)
 
-    # 1) parfois les headers se retrouvent dans les données (ré-extraction manuelle) :
+    # supprimer les entêtes répétés éventuellement présents dans les données
     headers = list(big.columns)
-    big = big[~(big.iloc[:, 0] == headers[0])]  # filtre lignes = 'RéférenceProduit' etc.
+    big = big[~(big.iloc[:, 0] == headers[0])]
 
-    # 2) on vire les doublons stricts
+    # supprimer les doublons stricts
     big = big.drop_duplicates(keep="first").reset_index(drop=True)
     return big
 
@@ -96,10 +92,8 @@ def appliquer_mise_a_jour(dff, maj):
     return joined.drop(columns=["Code_famille_Client_maj"])
 
 
-# ════════════════════════════════════════════
-# 2. ÉTAPE 1 : uploads multi-fichiers
-# ════════════════════════════════════════════
-st.header("Étape 1 : DFF + fichier codes client manquants")
+# ═════════════════════ 2. ÉTAPE 1 : multi-uploads ═════════════════════
+st.header("Étape 1 : générer le DFF et le fichier des codes client manquants")
 
 c1, c2, c3 = st.columns(3)
 with c1:
@@ -124,15 +118,11 @@ with c3:
 entreprise = st.text_input("🏢 Entreprise (MAJUSCULES)").strip().upper()
 
 if st.button("🚀 Fusionner (Étape 1)"):
-    # vérif fichiers
     if not (files1 and files2 and files3 and entreprise):
         st.warning("🛈 Chargez les trois blocs de fichiers + entreprise.")
         st.stop()
 
-    # concaténation par bloc
-    raw1 = concat_files(files1)
-    raw2 = concat_files(files2)
-    raw3 = concat_files(files3)
+    raw1, raw2, raw3 = [concat_files(x) for x in (files1, files2, files3)]
     if any(df is None for df in (raw1, raw2, raw3)):
         st.stop()
 
@@ -144,44 +134,66 @@ if st.button("🚀 Fusionner (Étape 1)"):
 
     dff, missing = fusion_etape1(df1, df2, df3, entreprise)
 
-    # sauvegarde dans session (identique aux versions précédentes)
+    # stocke dans session_state
     dstr = datetime.today().strftime("%y%m%d")
-    st.session_state.update(dff_df=dff,
-                            missing_df=missing,
-                            dff_csv=dff.to_csv(index=False, sep=";").encode(),
-                            missing_csv=(missing.to_csv(index=False, sep=";").encode()
-                                         if not missing.empty else None),
-                            ent=entreprise,
-                            dstr=dstr)
-
+    st.session_state.update(
+        dff_df=dff,
+        missing_df=missing,
+        dff_csv=dff.to_csv(index=False, sep=";").encode(),
+        missing_csv=(missing.to_csv(index=False, sep=";").encode() if not missing.empty else None),
+        dstr=dstr,
+        ent=entreprise,
+        missing_excel=None,
+    )
     if not missing.empty:
         buf = io.BytesIO()
         (missing["M2_annee_actuelle"].dropna().drop_duplicates()
          .to_excel(buf, index=False, header=False))
         buf.seek(0)
         st.session_state["missing_excel"] = buf
-    else:
-        st.session_state["missing_excel"] = None
 
     st.success("✅ Étape 1 terminée !")
 
-# (Affichage + téléchargements identiques aux versions précédentes)
-# …
-# (Étape 2 – inchangée, toujours compatible)
+# ─── 2.4 Affichage & téléchargements Étape 1 ───
+if "dff_df" in st.session_state:
+    st.subheader("Aperçu DFF")
+    st.dataframe(st.session_state.dff_df, use_container_width=True)
 
+    dstr = st.session_state.dstr
+    ent = st.session_state.ent
+    label_dff = "📥 Télécharger DFF COMPLET" if st.session_state.missing_df.empty \
+                else "📥 Télécharger DFF (à conserver)"
+    st.download_button(
+        label_dff,
+        st.session_state.dff_csv,
+        file_name=f"DFF_{ent}_{dstr}.csv",
+        mime="text/csv",
+    )
 
+    if not st.session_state.missing_df.empty:
+        data_missing = (st.session_state.missing_excel
+                        if st.session_state.missing_excel
+                        else st.session_state.missing_csv)
+        ext = "xlsx" if st.session_state.missing_excel else "csv"
+        st.download_button(
+            "📥 Télécharger fichier codes client **à remettre dans l’étape 2**",
+            data_missing,
+            file_name=f"CODES_CLIENT_{ent}_{dstr}.{ext}",
+            mime=("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  if ext == "xlsx" else "text/csv"),
+        )
+    else:
+        st.info("👍 Aucun code client manquant – le DFF est complet.")
 
-# ════════════════════════════════════════════
-# 3. ÉTAPE 2 : DFF final + TXT accusé
-# ════════════════════════════════════════════
+# ═════════════════════ 3. ÉTAPE 2 : DFF final + TXT ═════════════════════
 st.header("Étape 2 : intégrer le fichier client complété")
 
 st.markdown(
     """
 Chargez le **DFF** généré à l’étape 1 et le fichier que le client a complété.  
-La fusion produit&nbsp;:
+La fusion produit :
 * un **DFF final**,
-* un fichier TXT « AFRXHYBRCMRYYMMDD0000.txt » d’accusé,
+* un fichier TXT « AFRXHYBRCMRYYMMDD0000.txt »,
 * éventuellement les références encore sans code.
 """
 )
@@ -213,12 +225,11 @@ if st.button("🔄 Fusionner (Étape 2)"):
     dff_final = appliquer_mise_a_jour(dff_initial, maj_df)
     encore_missing = dff_final[dff_final["Code_famille_Client"].isna()]
 
-    # ── Fichier TXT (accusé)
+    # fichier TXT d’accusé
     date_txt = datetime.today().strftime("%y%m%d")
     txt_name = f"AFRXHYBRCMR{date_txt}0000.txt"
     txt_content = f"DFRXHYBRCMR{date_txt}000068230116ITDFRXHYBRCMR{date_txt}RCMRHYBFRX                    OK000000"
 
-    # ── Affichage & téléchargements
     st.subheader("DFF final")
     st.dataframe(dff_final, use_container_width=True)
 
@@ -228,7 +239,6 @@ if st.button("🔄 Fusionner (Étape 2)"):
         file_name=f"DFF_FINAL_{date_txt}.csv",
         mime="text/csv",
     )
-
     st.download_button(
         f"📥 Télécharger {txt_name}",
         txt_content,
