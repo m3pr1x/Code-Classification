@@ -6,7 +6,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-# ═════════════════════ 0. PAGE + CLEAR ═════════════════════
+# ═════ 0. PAGE + CLEAR ═════
 st.set_page_config(page_title="Classification Code", page_icon="🧩", layout="wide")
 
 
@@ -15,13 +15,13 @@ def clear_and_rerun():
     st.rerun()
 
 
-clear_col, title_col = st.columns([1, 9])
-with clear_col:
+c_clear, c_title = st.columns([1, 9])
+with c_clear:
     st.button("🗑️ CLEAR", type="primary", on_click=clear_and_rerun)
-with title_col:
+with c_title:
     st.title("🧩 Classification Code")
 
-# ═════════════════════ 1. OUTILS ═════════════════════
+# ═════ 1. OUTILS ═════
 def read_any(file):
     name = file.name.lower()
     if name.endswith(".csv"):
@@ -30,14 +30,14 @@ def read_any(file):
                 return pd.read_csv(file, encoding=enc)
             except UnicodeDecodeError:
                 file.seek(0)
-        st.error(f"❌ {file.name} : encodage CSV non reconnu.")
+        st.error(f"{file.name} : encodage CSV non reconnu.")
     elif name.endswith((".xlsx", ".xls")):
         try:
             return pd.read_excel(file, engine="openpyxl")
         except ImportError:
-            st.error("❌ openpyxl manquant (ajoutez-le à requirements.txt).")
+            st.error("openpyxl manquant (ajoutez-le au requirements).")
     else:
-        st.error(f"❌ {file.name} : format non pris en charge.")
+        st.error(f"{file.name} : format non pris en charge.")
     return None
 
 
@@ -47,101 +47,94 @@ def concat_files(files):
         return None
     big = pd.concat(dfs, ignore_index=True)
     headers = list(big.columns)
-    big = big[~(big.iloc[:, 0] == headers[0])].drop_duplicates(keep="first").reset_index(drop=True)
+    big = big[~(big.iloc[:, 0] == headers[0])].drop_duplicates().reset_index(drop=True)
     return big
 
 
-def subset_current(df, ref_idx, val_idx):
-    df = df.copy()
-    df = df.rename(columns={
-        df.columns[ref_idx - 1]: "RéférenceProduit",
-        df.columns[val_idx - 1]: "M2_annee_actuelle",
-    })
+def subset_current(df, i_ref, i_val):
+    df = df.rename(columns={df.columns[i_ref - 1]: "RéférenceProduit",
+                             df.columns[i_val - 1]: "M2_annee_actuelle"})
     return df[["RéférenceProduit", "M2_annee_actuelle"]]
 
 
-def subset_previous(df, ref_idx, val_idx):
-    df = df.copy()
-    df = df.rename(columns={
-        df.columns[ref_idx - 1]: "RéférenceProduit",
-        df.columns[val_idx - 1]: "M2_annee_derniere",
-    })
-    keep = ["RéférenceProduit", "M2_annee_derniere"]
+def subset_previous(df, i_ref, i_val):
+    df = df.rename(columns={df.columns[i_ref - 1]: "RéférenceProduit",
+                             df.columns[i_val - 1]: "M2_annee_derniere"})
     extra = ["MACH2_FAM", "FAMI_LIBELLE", "MACH2_SFAM", "SFAMI_LIBELLE",
              "MACH2_FONC", "FONC_LIBELLE"]
-    keep += [c for c in extra if c in df.columns]
-    return df[keep]
+    cols = ["RéférenceProduit", "M2_annee_derniere"] + [c for c in extra if c in df.columns]
+    return df[cols]
 
 
-def subset_client(df, ref_idx, val_idx):
-    df = df.copy()
-    df = df.rename(columns={
-        df.columns[ref_idx - 1]: "RéférenceProduit",
-        df.columns[val_idx - 1]: "Code_famille_Client",
-    })
+def subset_client(df, i_ref, i_val):
+    df = df.rename(columns={df.columns[i_ref - 1]: "RéférenceProduit",
+                             df.columns[i_val - 1]: "Code_famille_Client"})
     return df[["RéférenceProduit", "Code_famille_Client"]]
 
 
-def fusion_etape1(df1, df2, df3, ent):
-    dff = reduce(lambda l, r: pd.merge(l, r, on="RéférenceProduit", how="outer"), [df1, df2, df3])
-    dff["Entreprise"] = ent
-    missing = dff[dff["Code_famille_Client"].isna()].copy()
-    return dff, missing
+def fusion_etape1(d1, d2, d3, ent):
+    full = reduce(lambda l, r: pd.merge(l, r, on="RéférenceProduit", how="outer"), [d1, d2, d3])
+    full["Entreprise"] = ent
+    missing = full[full["Code_famille_Client"].isna()].copy()
+    return full, missing
 
 
-def appliquer_mise_a_jour(dff, maj):
-    joined = dff.merge(
+def appliquer_maj(dff, maj):
+    merged = dff.merge(
         maj[["RéférenceProduit", "Code_famille_Client"]],
-        on="RéférenceProduit",
-        how="left",
-        suffixes=("", "_maj"),
-    )
-    mask = joined["Code_famille_Client"].isna() & joined["Code_famille_Client_maj"].notna()
-    joined.loc[mask, "Code_famille_Client"] = joined.loc[mask, "Code_famille_Client_maj"]
-    return joined.drop(columns=["Code_famille_Client_maj"])
+        on="RéférenceProduit", how="left", suffixes=("", "_maj"))
+    mask = merged["Code_famille_Client"].isna() & merged["Code_famille_Client_maj"].notna()
+    merged.loc[mask, "Code_famille_Client"] = merged.loc[mask, "Code_famille_Client_maj"]
+    return merged.drop(columns=["Code_famille_Client_maj"])
 
 
-# ═════════════════════ 2. ÉTAPE 1 ═════════════════════
-st.header("Étape 1 : générer le DFF et le fichier à remplir")
+def build_dfrx(df, entreprise):
+    return pd.DataFrame({
+        "Code famille Client": df["Code_famille_Client"],
+        "onsenfou": None,
+        "Entreprises": entreprise,
+        "M2": "M2_" + df["RéférenceProduit"].astype(str),
+    }).drop_duplicates()
+
+# ═════ 2. ÉTAPE 1 ═════
+st.header("Étape 1 : DFF & fichier à remplir")
 
 c1, c2, c3 = st.columns(3)
 with c1:
-    files1 = st.file_uploader("Catalogue interne (M2 actuelle)", type=("csv", "xlsx", "xls"),
-                              accept_multiple_files=True)
+    files1 = st.file_uploader("Catalogue interne (M2 actuelle)",
+                              type=("csv", "xlsx", "xls"), accept_multiple_files=True)
     if files1:
-        r1 = st.number_input("Réf.", 1, key="r1", value=1)
-        v1 = st.number_input("M2 actuelle", 1, key="v1", value=2)
+        r1 = st.number_input("Idx Réf.", 1, key="r1", value=1)
+        v1 = st.number_input("Idx M2 actuelle", 1, key="v1", value=2)
 with c2:
-    files2 = st.file_uploader("Historique (M2 dernière)", type=("csv", "xlsx", "xls"),
-                              accept_multiple_files=True)
+    files2 = st.file_uploader("Historique (M2 dernière)",
+                              type=("csv", "xlsx", "xls"), accept_multiple_files=True)
     if files2:
-        r2 = st.number_input("Réf.", 1, key="r2", value=1)
-        v2 = st.number_input("M2 dernière", 1, key="v2", value=2)
+        r2 = st.number_input("Idx Réf.", 1, key="r2", value=1)
+        v2 = st.number_input("Idx M2 dernière", 1, key="v2", value=2)
 with c3:
-    files3 = st.file_uploader("Fichier client (Code famille)", type=("csv", "xlsx", "xls"),
-                              accept_multiple_files=True)
+    files3 = st.file_uploader("Fichier client (Code famille)",
+                              type=("csv", "xlsx", "xls"), accept_multiple_files=True)
     if files3:
-        r3 = st.number_input("Réf.", 1, key="r3", value=1)
-        v3 = st.number_input("Code famille", 1, key="v3", value=2)
+        r3 = st.number_input("Idx Réf.", 1, key="r3", value=1)
+        v3 = st.number_input("Idx Code famille", 1, key="v3", value=2)
 
 entreprise = st.text_input("Entreprise (MAJUSCULES)").strip().upper()
 
 if st.button("Fusionner Étape 1"):
     if not (files1 and files2 and files3 and entreprise):
-        st.warning("Chargez les trois blocs de fichiers + entreprise.")
+        st.warning("Chargez les trois groupes de fichiers + l’entreprise.")
         st.stop()
 
     raw1, raw2, raw3 = [concat_files(x) for x in (files1, files2, files3)]
     if any(df is None for df in (raw1, raw2, raw3)):
         st.stop()
 
-    df1 = subset_current(raw1, r1, v1)
-    df2 = subset_previous(raw2, r2, v2)
-    df3 = subset_client(raw3,  r3, v3)
-    if any(df is None for df in (df1, df2, df3)):
-        st.stop()
+    d1 = subset_current(raw1, r1, v1)
+    d2 = subset_previous(raw2, r2, v2)
+    d3 = subset_client(raw3,  r3, v3)
 
-    dff, missing = fusion_etape1(df1, df2, df3, entreprise)
+    dff, missing = fusion_etape1(d1, d2, d3, entreprise)
 
     dstr = datetime.today().strftime("%y%m%d")
     st.session_state.update(
@@ -155,11 +148,11 @@ if st.button("Fusionner Étape 1"):
     if missing.empty:
         st.session_state["missing_file"] = None
     else:
-        cols_export = ["M2_annee_actuelle", "MACH2_FAM", "FAMI_LIBELLE",
-                       "MACH2_SFAM", "SFAMI_LIBELLE", "MACH2_FONC", "FONC_LIBELLE"]
-        export_df = missing[[c for c in cols_export if c in missing.columns]].drop_duplicates()
+        x_cols = ["M2_annee_actuelle", "MACH2_FAM", "FAMI_LIBELLE",
+                  "MACH2_SFAM", "SFAMI_LIBELLE", "MACH2_FONC", "FONC_LIBELLE"]
+        export = missing[[c for c in x_cols if c in missing.columns]].drop_duplicates()
         buf = io.BytesIO()
-        export_df.to_excel(buf, index=False)  # header inclus
+        export.to_excel(buf, index=False)
         buf.seek(0)
         st.session_state["missing_file"] = buf
 
@@ -169,31 +162,26 @@ if "dff_df" in st.session_state:
     st.subheader("Aperçu DFF")
     st.dataframe(st.session_state.dff_df, use_container_width=True)
 
-    st.download_button(
-        "Télécharger DFF",
-        st.session_state.dff_csv,
-        file_name=f"DFF_{st.session_state.ent}_{st.session_state.dstr}.csv",
-        mime="text/csv",
-    )
+    st.download_button("Télécharger DFF (interne)",
+                       st.session_state.dff_csv,
+                       file_name=f"DFF_{st.session_state.ent}_{st.session_state.dstr}.csv",
+                       mime="text/csv")
 
     if st.session_state.get("missing_file"):
-        st.download_button(
-            "Télécharger fichier à remplir (Excel)",
-            st.session_state.missing_file,
-            file_name=f"CODES_CLIENT_{st.session_state.ent}_{st.session_state.dstr}.xlsx",
-            mime=("application/vnd.openxmlformats-officedocument."
-                  "spreadsheetml.sheet"),
-        )
+        st.download_button("Télécharger fichier à remplir (Excel)",
+                           st.session_state.missing_file,
+                           file_name=f"CODES_CLIENT_{st.session_state.ent}_{st.session_state.dstr}.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     else:
         st.info("Aucun code client manquant.")
 
-# ═════════════════════ 3. ÉTAPE 2 ═════════════════════
-st.header("Étape 2 : intégrer le fichier client complété")
+# ═════ 3. ÉTAPE 2 ═════
+st.header("Étape 2 : retour client → fichiers finaux")
 
-col_dff, col_cli = st.columns(2)
-with col_dff:
+c_dff, c_cli = st.columns(2)
+with c_dff:
     dff_file = st.file_uploader("DFF initial (CSV)", type="csv")
-with col_cli:
+with c_cli:
     maj_file = st.file_uploader("Fichier client complété", type=("csv", "xlsx", "xls"))
 
 if st.button("Fusionner Étape 2"):
@@ -202,7 +190,7 @@ if st.button("Fusionner Étape 2"):
         st.stop()
 
     try:
-        dff_initial = pd.read_csv(dff_file, sep=";")
+        dff_init = pd.read_csv(dff_file, sep=";")
     except Exception as e:
         st.error(f"Lecture DFF : {e}")
         st.stop()
@@ -213,20 +201,32 @@ if st.button("Fusionner Étape 2"):
     if "Code_famille_Client" not in maj_df.columns:
         maj_df.columns = ["RéférenceProduit", "Code_famille_Client"][: len(maj_df.columns)]
 
-    dff_final = appliquer_mise_a_jour(dff_initial, maj_df)
+    dff_final = appliquer_maj(dff_init, maj_df)
     encore_missing = dff_final[dff_final["Code_famille_Client"].isna()]
 
-    date_txt = datetime.today().strftime("%y%m%d")
-    txt_name = f"AFRXHYBRCMR{date_txt}0000.txt"
-    txt_content = f"DFRXHYBRCMR{date_txt}000068230116ITDFRXHYBRCMR{date_txt}RCMRHYBFRX                    OK000000"
+    # — fichier DFRXHYBRCMR (TSV)
+    ent_out = (dff_final["Entreprise"].dropna().unique() or [""])[0]
+    dfrx_df = build_dfrx(dff_final[dff_final["Code_famille_Client"].notna()], ent_out)
+    buf_tsv = io.StringIO()
+    dfrx_df.to_csv(buf_tsv, sep="\t", index=False, header=False)
+    dfrx_content = buf_tsv.getvalue()
 
-    st.subheader("DFF final")
-    st.dataframe(dff_final, use_container_width=True)
+    # — accusé TXT
+    dstr = datetime.today().strftime("%y%m%d")
+    txt_name = f"AFRXHYBRCMR{dstr}0000.txt"
+    txt_content = (f"DFRXHYBRCMR{dstr}000068230116IT"
+                   f"DFRXHYBRCMR{dstr}RCMRHYBFRX                    OK000000")
 
-    st.download_button("Télécharger DFF final",
-                       dff_final.to_csv(index=False, sep=";").encode(),
-                       file_name=f"DFF_FINAL_{date_txt}.csv",
-                       mime="text/csv")
+    dfrx_name = f"DFRXHYBRCMR{dstr}0000"
+
+    st.subheader("Aperçu DFRX (TSV)")
+    st.dataframe(dfrx_df.head(50))  # aperçu rapide
+
+    st.download_button(f"Télécharger {dfrx_name}",
+                       dfrx_content,
+                       file_name=dfrx_name,
+                       mime="text/plain")
+
     st.download_button(f"Télécharger {txt_name}",
                        txt_content,
                        file_name=txt_name,
@@ -237,7 +237,7 @@ if st.button("Fusionner Étape 2"):
         st.dataframe(encore_missing, use_container_width=True)
         st.download_button("Télécharger références restantes",
                            encore_missing.to_csv(index=False, sep=";").encode(),
-                           file_name=f"CODES_MANQUANTS_{date_txt}.csv",
+                           file_name=f"CODES_MANQUANTS_{dstr}.csv",
                            mime="text/csv")
     else:
         st.success("Tous les codes client sont renseignés !")
