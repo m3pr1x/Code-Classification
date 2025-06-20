@@ -40,8 +40,8 @@ def read_any(file):
     Lecture d'un CSV ou Excel.
 
     - CSV : teste encodages courants.
-    - XLSX/XLS : nécessite openpyxl. Si absent → message d’erreur Streamlit.
-    - Retourne un DataFrame ou None si erreur bloquante.
+    - XLSX/XLS : nécessite openpyxl. Affiche un message clair si absent.
+    - Retourne un DataFrame ou None si erreur.
     """
     name = file.name.lower()
 
@@ -58,14 +58,11 @@ def read_any(file):
     # EXCEL ----------------------------------------------------------------
     elif name.endswith((".xlsx", ".xls")):
         try:
-            # Si le fichier est très gros, on peut lire par morceaux :
-            # df = pd.read_excel(file, engine="openpyxl", chunksize=50_000)
-            # df = pd.concat(df, ignore_index=True)
             return pd.read_excel(file, engine="openpyxl")
         except ImportError:
             st.error(
                 "❌ openpyxl n’est pas installé. "
-                "Ajoutez `openpyxl` à votre requirements.txt et redeployez."
+                "Ajoutez `openpyxl` à requirements.txt puis redeployez."
             )
             return None
         except Exception as e:
@@ -73,7 +70,7 @@ def read_any(file):
             return None
 
     else:
-        st.error("❌ Format de fichier non pris en charge (CSV ou Excel uniquement).")
+        st.error("❌ Format non pris en charge (CSV ou Excel uniquement).")
         return None
 
 
@@ -82,10 +79,10 @@ def today_yyMMdd() -> str:
 
 
 def classification_class(df1, df2, df3, entreprise,
-                          col_ref="RéférenceProduit",
-                          col_m2_last="M2_annee_derniere",
-                          col_m2_now="M2_annee_actuelle",
-                          col_client="Code_famille_Client"):
+                         col_ref="RéférenceProduit",
+                         col_m2_last="M2_annee_derniere",
+                         col_m2_now="M2_annee_actuelle",
+                         col_client="Code_famille_Client"):
     """Outer-merge des trois sources + ajout colonne Entreprise. Retourne DFF et df_missing."""
     dfs = [
         df1[[col_ref, col_m2_now]],
@@ -136,6 +133,7 @@ entreprise = entreprise_input.strip().upper()
 
 # ─────────────── ACTION ────────────────
 st.subheader("3. Fusion & export")
+
 if st.button("🚀 Fusionner"):
     if not (file1 and file2 and file3 and entreprise):
         st.warning("🛈 Joignez les trois fichiers **et** saisissez l’entreprise.")
@@ -143,14 +141,16 @@ if st.button("🚀 Fusionner"):
 
     # Lecture
     df_raw1, df_raw2, df_raw3 = [read_any(f) for f in (file1, file2, file3)]
-    if None in (df_raw1, df_raw2, df_raw3):
+
+    # Si l’un des DataFrames n’a pas été lu correctement → arrêt
+    if any(obj is None for obj in (df_raw1, df_raw2, df_raw3)):
         st.stop()
 
     # Extraction
     df1 = build_trimmed_df(df_raw1, ref1, val1, "M2_annee_actuelle")
     df2 = build_trimmed_df(df_raw2, ref2, val2, "M2_annee_derniere")
     df3 = build_trimmed_df(df_raw3, ref3, val3, "Code_famille_Client")
-    if None in (df1, df2, df3):
+    if any(obj is None for obj in (df1, df2, df3)):
         st.stop()
 
     # Fusion
