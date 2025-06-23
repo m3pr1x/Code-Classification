@@ -44,9 +44,8 @@ def read_any(file):
     return None
 
 
-def concat_files(files):
-    """Concatène plusieurs fichiers lus via read_any()."""
-    dfs = [df for f in files if (df := read_any(f)) is not None]
+def concat_dfs(dfs):
+    """Concatène plusieurs DataFrames et retire d’éventuelles lignes d’en-tête dupliquées."""
     if not dfs:
         return None
     big = pd.concat(dfs, ignore_index=True)
@@ -104,36 +103,59 @@ def build_dfrx(df, entreprise):
 # ═════ 2. ÉTAPE 1 ═════
 st.header("Étape 1 : DFF & fichier à remplir")
 
-c1, c2, c3 = st.columns(3)
-with c1:
-    files1 = st.file_uploader("Catalogue interne (M2 actuelle)",
-                              type=("csv", "xlsx", "xls"), accept_multiple_files=True)
-    if files1:
-        r1 = st.number_input("Idx Réf.", 1, key="r1", value=1)
-        v1 = st.number_input("Idx M2 actuelle", 1, key="v1", value=2)
-with c2:
-    files2 = st.file_uploader("Historique (M2 dernière)",
-                              type=("csv", "xlsx", "xls"), accept_multiple_files=True)
-    if files2:
-        r2 = st.number_input("Idx Réf.", 1, key="r2", value=1)
-        v2 = st.number_input("Idx M2 dernière", 1, key="v2", value=2)
-with c3:
-    files3 = st.file_uploader("Fichier client (Code famille)",
-                              type=("csv", "xlsx", "xls"), accept_multiple_files=True)
-    if files3:
-        r3 = st.number_input("Idx Réf.", 1, key="r3", value=1)
-        v3 = st.number_input("Idx Code famille", 1, key="v3", value=2)
+# — initialisation des listes en session —
+for k in ("cat_dfs", "hist_dfs", "cli_dfs"):
+    st.session_state.setdefault(k, [])
+
+# — réglages d’indices (toujours visibles) —
+r1 = st.number_input("Catalogue : idx Réf.", 1, key="r1", value=1)
+v1 = st.number_input("Catalogue : idx M2 actuelle", 1, key="v1", value=2)
+r2 = st.number_input("Historique : idx Réf.", 1, key="r2", value=1)
+v2 = st.number_input("Historique : idx M2 dernière", 1, key="v2", value=2)
+r3 = st.number_input("Fichier client : idx Réf.", 1, key="r3", value=1)
+v3 = st.number_input("Fichier client : idx Code famille", 1, key="v3", value=2)
+
+# — upload + ajout incrémental —
+cols_up = st.columns(3)
+lot_info = [("Catalogue interne", "cat_dfs"),
+            ("Historique", "hist_dfs"),
+            ("Fichier client", "cli_dfs")]
+
+for (lbl, key), col in zip(lot_info, cols_up):
+    with col:
+        st.markdown(f"**{lbl}**")
+        up_files = st.file_uploader("Sélection fichiers", accept_multiple_files=True,
+                                    type=("csv", "xlsx", "xls"), key=f"up_{key}")
+        if st.button("Ajouter", key=f"add_{key}"):
+            if not up_files:
+                st.warning("Sélectionnez des fichiers avant d'ajouter.")
+            else:
+                added = 0
+                for f in up_files:
+                    df = read_any(f)
+                    if df is not None:
+                        st.session_state[key].append(df)
+                        added += 1
+                st.success(f"{added} fichier(s) ajouté(s).")
+        st.write(f"Lot actuel : {len(st.session_state[key])} fichier(s)")
 
 entreprise = st.text_input("Entreprise (MAJUSCULES)").strip().upper()
 
-# ---------- 2.1 : fusion initiale ----------
+# ---------- 2.1 : fusion ----------
 if st.button("Fusionner Étape 1"):
-    if not (files1 and files2 and files3 and entreprise):
-        st.warning("Chargez les trois groupes de fichiers + l’entreprise.")
+    if not (st.session_state.cat_dfs
+            and st.session_state.hist_dfs
+            and st.session_state.cli_dfs
+            and entreprise):
+        st.warning("Ajoutez des fichiers dans les trois lots et renseignez l’entreprise.")
         st.stop()
 
-    raw1, raw2, raw3 = [concat_files(x) for x in (files1, files2, files3)]
+    raw1 = concat_dfs(st.session_state.cat_dfs)
+    raw2 = concat_dfs(st.session_state.hist_dfs)
+    raw3 = concat_dfs(st.session_state.cli_dfs)
+
     if any(df is None for df in (raw1, raw2, raw3)):
+        st.error("Problème lors de la lecture de certains fichiers.")
         st.stop()
 
     d1 = subset_current(raw1, r1, v1)
@@ -141,47 +163,46 @@ if st.button("Fusionner Étape 1"):
     d3 = subset_client(raw3,  r3, v3)
 
     dff, missing = fusion_etape1(d1, d2, d3, entreprise)
-
     dstr = datetime.today().strftime("%y%m%d")
 
-    # persistance (PAS de fichier à remplir généré ici)
     st.session_state.update(
         dff_df=dff,
         missing_df=missing,
         dff_csv=dff.to_csv(index=False, sep=";").encode(),
         dstr=dstr,
         ent=entreprise,
-        missing_file=None  # réinitialise
+        missing_file=None
     )
-    st.success("Fusion terminée ! Sélectionnez maintenant les colonnes du fichier à remplir puis cliquez sur « Générer ».")
+    st.success("Fusion effectuée. Sélectionnez les colonnes puis générez le fichier à remplir.")
 
-# ---------- 2.2 : sélection des colonnes & génération fichier client ----------
+# ---------- 2.2 : sélection colonnes & génération ----------
 if "missing_df" in st.session_state and not st.session_state.missing_df.empty:
     st.subheader("Colonnes à inclure dans le fichier à remplir")
 
     available_cols = [c for c in st.session_state.missing_df.columns
                       if c not in ("Code_famille_Client", "Entreprise")]
-
     default_cols = ["M2_annee_actuelle", "MACH2_FAM", "FAMI_LIBELLE",
                     "MACH2_SFAM", "SFAMI_LIBELLE", "MACH2_FONC", "FONC_LIBELLE"]
 
     selected_cols = st.multiselect(
-        "Choisissez autant de colonnes que nécessaire",
+        "Choisissez autant de colonnes que nécessaire (RéférenceProduit est toujours incluse)",
         options=available_cols,
-        default=[c for c in default_cols if c in available_cols],
-        key="cols_select"
+        default=[c for c in default_cols if c in available_cols]
     )
 
-    if st.button("Générer fichier à remplir", key="btn_generate_missing"):
+    if st.button("Générer fichier à remplir"):
         export = st.session_state.missing_df[
             ["RéférenceProduit"] + selected_cols
         ].drop_duplicates()
+
+        # — colonne vide à remplir —
+        export.insert(1, "Code_famille_Client", "")
 
         buf = io.BytesIO()
         export.to_excel(buf, index=False)
         buf.seek(0)
         st.session_state["missing_file"] = buf
-        st.success("Fichier à remplir mis à jour !")
+        st.success("Fichier Excel prêt à être téléchargé.")
 
 # ---------- 2.3 : aperçus + téléchargements ----------
 if "dff_df" in st.session_state:
@@ -197,10 +218,9 @@ if "dff_df" in st.session_state:
         st.download_button("Télécharger fichier à remplir (Excel)",
                            st.session_state.missing_file,
                            file_name=f"CODES_CLIENT_{st.session_state.ent}_{st.session_state.dstr}.xlsx",
-                           mime=("application/vnd.openxmlformats-"
-                                 "officedocument.spreadsheetml.sheet"))
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     elif "missing_df" in st.session_state and not st.session_state.missing_df.empty:
-        st.info("Sélectionnez les colonnes ci-dessus puis cliquez sur « Générer fichier à remplir ».")
+        st.info("Sélectionnez des colonnes puis cliquez sur « Générer fichier à remplir ».")
     else:
         st.info("Aucun code client manquant.")
 
@@ -212,31 +232,42 @@ c_dff, c_cli = st.columns(2)
 with c_dff:
     dff_file = st.file_uploader("DFF initial (CSV)", type="csv")
 with c_cli:
-    maj_file = st.file_uploader("Fichier client complété", type=("csv", "xlsx", "xls"))
+    maj_files = st.file_uploader("Fichier(s) client complété(s)",
+                                 type=("csv", "xlsx", "xls"), accept_multiple_files=True)
 
 if st.button("Fusionner Étape 2"):
-    if not (dff_file and maj_file):
-        st.warning("Chargez les deux fichiers.")
+    if not (dff_file and maj_files):
+        st.warning("Chargez le DFF et au moins un fichier client.")
         st.stop()
 
-    # lecture
+    # — lecture DFF —
     try:
         dff_init = pd.read_csv(dff_file, sep=";")
     except Exception as e:
         st.error(f"Lecture DFF : {e}")
         st.stop()
 
-    maj_df = read_any(maj_file)
-    if maj_df is None:
-        st.stop()
-    if "Code_famille_Client" not in maj_df.columns:
-        maj_df.columns = ["RéférenceProduit", "Code_famille_Client"][: len(maj_df.columns)]
+    # — lecture & concat des fichiers client —
+    maj_dfs = []
+    for f in maj_files:
+        tmp = read_any(f)
+        if tmp is None:
+            continue
+        if "Code_famille_Client" not in tmp.columns:
+            tmp.columns = ["RéférenceProduit", "Code_famille_Client"][: len(tmp.columns)]
+        maj_dfs.append(tmp[["RéférenceProduit", "Code_famille_Client"]])
 
-    # mise à jour
+    if not maj_dfs:
+        st.error("Aucun des fichiers client n'a pu être lu correctement.")
+        st.stop()
+
+    maj_df = pd.concat(maj_dfs, ignore_index=True).drop_duplicates(subset="RéférenceProduit")
+
+    # — mise à jour —
     dff_final = appliquer_maj(dff_init, maj_df)
     encore_missing = dff_final[dff_final["Code_famille_Client"].isna()]
 
-    # fichier DFRX
+    # — fichier DFRX —
     ent_out = (dff_final["Entreprise"].dropna().unique() or [""])[0]
     dfrx_df = build_dfrx(dff_final[dff_final["Code_famille_Client"].notna()], ent_out)
 
@@ -244,7 +275,7 @@ if st.button("Fusionner Étape 2"):
     dfrx_df.to_csv(buf_tsv, sep="\t", index=False, header=False)
     dfrx_content = buf_tsv.getvalue()
 
-    # accusé TXT
+    # — accusé TXT —
     dstr = datetime.today().strftime("%y%m%d")
     txt_name = f"AFRXHYBRCMR{dstr}0000.txt"
     txt_content = (f"DFRXHYBRCMR{dstr}000068230116IT"
@@ -252,7 +283,7 @@ if st.button("Fusionner Étape 2"):
 
     dfrx_name = f"DFRXHYBRCMR{dstr}0000"
 
-    # affichage + downloads
+    # — affichage + downloads —
     st.subheader("Aperçu DFRX (TSV)")
     st.dataframe(dfrx_df.head(50))
 
