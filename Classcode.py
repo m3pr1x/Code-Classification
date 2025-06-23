@@ -126,8 +126,8 @@ with c3:
 
 entreprise = st.text_input("Entreprise (MAJUSCULES)").strip().upper()
 
+# ---------- 2.1 : fusion initiale ----------
 if st.button("Fusionner Étape 1"):
-    # ---------- contrôles ----------
     if not (files1 and files2 and files3 and entreprise):
         st.warning("Chargez les trois groupes de fichiers + l’entreprise.")
         st.stop()
@@ -136,50 +136,54 @@ if st.button("Fusionner Étape 1"):
     if any(df is None for df in (raw1, raw2, raw3)):
         st.stop()
 
-    # ---------- sous-ensembles ----------
     d1 = subset_current(raw1, r1, v1)
     d2 = subset_previous(raw2, r2, v2)
     d3 = subset_client(raw3,  r3, v3)
 
     dff, missing = fusion_etape1(d1, d2, d3, entreprise)
+
     dstr = datetime.today().strftime("%y%m%d")
 
-    # ---------- choix utilisateur des colonnes ----------
-    if not missing.empty:
-        available_cols = [c for c in missing.columns
-                          if c not in ("Code_famille_Client", "Entreprise")]
-        defaults = ["M2_annee_actuelle", "MACH2_FAM", "FAMI_LIBELLE",
-                    "MACH2_SFAM", "SFAMI_LIBELLE", "MACH2_FONC", "FONC_LIBELLE"]
-
-        selected_cols = st.multiselect(
-            "Colonnes à inclure dans le fichier à remplir",
-            options=available_cols,
-            default=[c for c in defaults if c in available_cols],
-            help="Ces colonnes aideront le client à identifier chaque référence.",
-            key="cols_select"
-        )
-        export = missing[["RéférenceProduit"] + selected_cols].drop_duplicates()
-
-        buf = io.BytesIO()
-        export.to_excel(buf, index=False)
-        buf.seek(0)
-        st.session_state["missing_file"] = buf
-    else:
-        st.session_state["missing_file"] = None
-
-    # ---------- persistance ----------
+    # persistance (PAS de fichier à remplir généré ici)
     st.session_state.update(
         dff_df=dff,
         missing_df=missing,
         dff_csv=dff.to_csv(index=False, sep=";").encode(),
         dstr=dstr,
         ent=entreprise,
+        missing_file=None  # réinitialise
+    )
+    st.success("Fusion terminée ! Sélectionnez maintenant les colonnes du fichier à remplir puis cliquez sur « Générer ».")
+
+# ---------- 2.2 : sélection des colonnes & génération fichier client ----------
+if "missing_df" in st.session_state and not st.session_state.missing_df.empty:
+    st.subheader("Colonnes à inclure dans le fichier à remplir")
+
+    available_cols = [c for c in st.session_state.missing_df.columns
+                      if c not in ("Code_famille_Client", "Entreprise")]
+
+    default_cols = ["M2_annee_actuelle", "MACH2_FAM", "FAMI_LIBELLE",
+                    "MACH2_SFAM", "SFAMI_LIBELLE", "MACH2_FONC", "FONC_LIBELLE"]
+
+    selected_cols = st.multiselect(
+        "Choisissez autant de colonnes que nécessaire",
+        options=available_cols,
+        default=[c for c in default_cols if c in available_cols],
+        key="cols_select"
     )
 
-    st.success("Étape 1 terminée !")
+    if st.button("Générer fichier à remplir", key="btn_generate_missing"):
+        export = st.session_state.missing_df[
+            ["RéférenceProduit"] + selected_cols
+        ].drop_duplicates()
 
+        buf = io.BytesIO()
+        export.to_excel(buf, index=False)
+        buf.seek(0)
+        st.session_state["missing_file"] = buf
+        st.success("Fichier à remplir mis à jour !")
 
-# ---------- affichage + download ----------
+# ---------- 2.3 : aperçus + téléchargements ----------
 if "dff_df" in st.session_state:
     st.subheader("Aperçu DFF")
     st.dataframe(st.session_state.dff_df, use_container_width=True)
@@ -195,6 +199,8 @@ if "dff_df" in st.session_state:
                            file_name=f"CODES_CLIENT_{st.session_state.ent}_{st.session_state.dstr}.xlsx",
                            mime=("application/vnd.openxmlformats-"
                                  "officedocument.spreadsheetml.sheet"))
+    elif "missing_df" in st.session_state and not st.session_state.missing_df.empty:
+        st.info("Sélectionnez les colonnes ci-dessus puis cliquez sur « Générer fichier à remplir ».")
     else:
         st.info("Aucun code client manquant.")
 
@@ -213,7 +219,7 @@ if st.button("Fusionner Étape 2"):
         st.warning("Chargez les deux fichiers.")
         st.stop()
 
-    # ---------- lecture ----------
+    # lecture
     try:
         dff_init = pd.read_csv(dff_file, sep=";")
     except Exception as e:
@@ -226,11 +232,11 @@ if st.button("Fusionner Étape 2"):
     if "Code_famille_Client" not in maj_df.columns:
         maj_df.columns = ["RéférenceProduit", "Code_famille_Client"][: len(maj_df.columns)]
 
-    # ---------- mise à jour ----------
+    # mise à jour
     dff_final = appliquer_maj(dff_init, maj_df)
     encore_missing = dff_final[dff_final["Code_famille_Client"].isna()]
 
-    # ---------- fichier DFRX ----------
+    # fichier DFRX
     ent_out = (dff_final["Entreprise"].dropna().unique() or [""])[0]
     dfrx_df = build_dfrx(dff_final[dff_final["Code_famille_Client"].notna()], ent_out)
 
@@ -238,7 +244,7 @@ if st.button("Fusionner Étape 2"):
     dfrx_df.to_csv(buf_tsv, sep="\t", index=False, header=False)
     dfrx_content = buf_tsv.getvalue()
 
-    # ---------- accusé TXT ----------
+    # accusé TXT
     dstr = datetime.today().strftime("%y%m%d")
     txt_name = f"AFRXHYBRCMR{dstr}0000.txt"
     txt_content = (f"DFRXHYBRCMR{dstr}000068230116IT"
@@ -246,7 +252,7 @@ if st.button("Fusionner Étape 2"):
 
     dfrx_name = f"DFRXHYBRCMR{dstr}0000"
 
-    # ---------- affichage ----------
+    # affichage + downloads
     st.subheader("Aperçu DFRX (TSV)")
     st.dataframe(dfrx_df.head(50))
 
@@ -260,7 +266,6 @@ if st.button("Fusionner Étape 2"):
                        file_name=txt_name,
                        mime="text/plain")
 
-    # ---------- références restantes ----------
     if not encore_missing.empty:
         st.subheader("Références encore sans code client")
         st.dataframe(encore_missing, use_container_width=True)
