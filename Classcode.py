@@ -6,6 +6,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
+
 # ═════ 0. PAGE + CLEAR ═════
 st.set_page_config(page_title="Classification Code", page_icon="🧩", layout="wide")
 
@@ -21,8 +22,10 @@ with c_clear:
 with c_title:
     st.title("🧩 Classification Code")
 
+
 # ═════ 1. OUTILS ═════
 def read_any(file):
+    """Lecture CSV / Excel avec détection d’encodage ou moteur openpyxl."""
     name = file.name.lower()
     if name.endswith(".csv"):
         for enc in ("utf-8", "latin1", "cp1252"):
@@ -42,6 +45,7 @@ def read_any(file):
 
 
 def concat_files(files):
+    """Concatène plusieurs fichiers lus via read_any()."""
     dfs = [df for f in files if (df := read_any(f)) is not None]
     if not dfs:
         return None
@@ -96,6 +100,7 @@ def build_dfrx(df, entreprise):
         "M2": "M2_" + df["RéférenceProduit"].astype(str),
     }).drop_duplicates()
 
+
 # ═════ 2. ÉTAPE 1 ═════
 st.header("Étape 1 : DFF & fichier à remplir")
 
@@ -122,6 +127,7 @@ with c3:
 entreprise = st.text_input("Entreprise (MAJUSCULES)").strip().upper()
 
 if st.button("Fusionner Étape 1"):
+    # ---------- contrôles ----------
     if not (files1 and files2 and files3 and entreprise):
         st.warning("Chargez les trois groupes de fichiers + l’entreprise.")
         st.stop()
@@ -130,13 +136,38 @@ if st.button("Fusionner Étape 1"):
     if any(df is None for df in (raw1, raw2, raw3)):
         st.stop()
 
+    # ---------- sous-ensembles ----------
     d1 = subset_current(raw1, r1, v1)
     d2 = subset_previous(raw2, r2, v2)
     d3 = subset_client(raw3,  r3, v3)
 
     dff, missing = fusion_etape1(d1, d2, d3, entreprise)
-
     dstr = datetime.today().strftime("%y%m%d")
+
+    # ---------- choix utilisateur des colonnes ----------
+    if not missing.empty:
+        available_cols = [c for c in missing.columns
+                          if c not in ("Code_famille_Client", "Entreprise")]
+        defaults = ["M2_annee_actuelle", "MACH2_FAM", "FAMI_LIBELLE",
+                    "MACH2_SFAM", "SFAMI_LIBELLE", "MACH2_FONC", "FONC_LIBELLE"]
+
+        selected_cols = st.multiselect(
+            "Colonnes à inclure dans le fichier à remplir",
+            options=available_cols,
+            default=[c for c in defaults if c in available_cols],
+            help="Ces colonnes aideront le client à identifier chaque référence.",
+            key="cols_select"
+        )
+        export = missing[["RéférenceProduit"] + selected_cols].drop_duplicates()
+
+        buf = io.BytesIO()
+        export.to_excel(buf, index=False)
+        buf.seek(0)
+        st.session_state["missing_file"] = buf
+    else:
+        st.session_state["missing_file"] = None
+
+    # ---------- persistance ----------
     st.session_state.update(
         dff_df=dff,
         missing_df=missing,
@@ -145,19 +176,10 @@ if st.button("Fusionner Étape 1"):
         ent=entreprise,
     )
 
-    if missing.empty:
-        st.session_state["missing_file"] = None
-    else:
-        x_cols = ["M2_annee_actuelle", "MACH2_FAM", "FAMI_LIBELLE",
-                  "MACH2_SFAM", "SFAMI_LIBELLE", "MACH2_FONC", "FONC_LIBELLE"]
-        export = missing[[c for c in x_cols if c in missing.columns]].drop_duplicates()
-        buf = io.BytesIO()
-        export.to_excel(buf, index=False)
-        buf.seek(0)
-        st.session_state["missing_file"] = buf
-
     st.success("Étape 1 terminée !")
 
+
+# ---------- affichage + download ----------
 if "dff_df" in st.session_state:
     st.subheader("Aperçu DFF")
     st.dataframe(st.session_state.dff_df, use_container_width=True)
@@ -171,9 +193,11 @@ if "dff_df" in st.session_state:
         st.download_button("Télécharger fichier à remplir (Excel)",
                            st.session_state.missing_file,
                            file_name=f"CODES_CLIENT_{st.session_state.ent}_{st.session_state.dstr}.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                           mime=("application/vnd.openxmlformats-"
+                                 "officedocument.spreadsheetml.sheet"))
     else:
         st.info("Aucun code client manquant.")
+
 
 # ═════ 3. ÉTAPE 2 ═════
 st.header("Étape 2 : retour client → fichiers finaux")
@@ -189,6 +213,7 @@ if st.button("Fusionner Étape 2"):
         st.warning("Chargez les deux fichiers.")
         st.stop()
 
+    # ---------- lecture ----------
     try:
         dff_init = pd.read_csv(dff_file, sep=";")
     except Exception as e:
@@ -201,17 +226,19 @@ if st.button("Fusionner Étape 2"):
     if "Code_famille_Client" not in maj_df.columns:
         maj_df.columns = ["RéférenceProduit", "Code_famille_Client"][: len(maj_df.columns)]
 
+    # ---------- mise à jour ----------
     dff_final = appliquer_maj(dff_init, maj_df)
     encore_missing = dff_final[dff_final["Code_famille_Client"].isna()]
 
-    # — fichier DFRXHYBRCMR (TSV)
+    # ---------- fichier DFRX ----------
     ent_out = (dff_final["Entreprise"].dropna().unique() or [""])[0]
     dfrx_df = build_dfrx(dff_final[dff_final["Code_famille_Client"].notna()], ent_out)
+
     buf_tsv = io.StringIO()
     dfrx_df.to_csv(buf_tsv, sep="\t", index=False, header=False)
     dfrx_content = buf_tsv.getvalue()
 
-    # — accusé TXT
+    # ---------- accusé TXT ----------
     dstr = datetime.today().strftime("%y%m%d")
     txt_name = f"AFRXHYBRCMR{dstr}0000.txt"
     txt_content = (f"DFRXHYBRCMR{dstr}000068230116IT"
@@ -219,8 +246,9 @@ if st.button("Fusionner Étape 2"):
 
     dfrx_name = f"DFRXHYBRCMR{dstr}0000"
 
+    # ---------- affichage ----------
     st.subheader("Aperçu DFRX (TSV)")
-    st.dataframe(dfrx_df.head(50))  # aperçu rapide
+    st.dataframe(dfrx_df.head(50))
 
     st.download_button(f"Télécharger {dfrx_name}",
                        dfrx_content,
@@ -232,6 +260,7 @@ if st.button("Fusionner Étape 2"):
                        file_name=txt_name,
                        mime="text/plain")
 
+    # ---------- références restantes ----------
     if not encore_missing.empty:
         st.subheader("Références encore sans code client")
         st.dataframe(encore_missing, use_container_width=True)
@@ -241,4 +270,3 @@ if st.button("Fusionner Étape 2"):
                            mime="text/csv")
     else:
         st.success("Tous les codes client sont renseignés !")
-
