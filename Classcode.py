@@ -1,7 +1,8 @@
-# app.py ─ version sans bouton “Ajouter”
+# app.py – version sans bouton “Ajouter” (Classification Code)
 import io
 from functools import reduce
 from datetime import datetime
+import csv
 
 import pandas as pd
 import streamlit as st
@@ -21,22 +22,48 @@ st.title("🧩 Classification Code")
 
 # ═══ 1. OUTILS ═══
 def read_any(file):
-    """Lire CSV ou Excel avec tentative d’encodages."""
+    """
+    Lecture robuste CSV / Excel.
+      • Essaie encodages utf-8, latin1, cp1252
+      • Auto-détecte le séparateur ( ; , | tab )
+      • Ignore les lignes mal formées (on_bad_lines='skip')
+    """
     name = file.name.lower()
+
+    # ---------- CSV ----------
     if name.endswith(".csv"):
         for enc in ("utf-8", "latin1", "cp1252"):
             try:
-                return pd.read_csv(file, encoding=enc)
-            except UnicodeDecodeError:
+                # auto-détection du séparateur sur 2 ko
                 file.seek(0)
-        st.error(f"{file.name} : encodage CSV non reconnu.")
+                sample = file.read(2048).decode(enc, errors="ignore")
+                dialect = csv.Sniffer().sniff(sample, delimiters=";,|\t")
+                sep_detected = dialect.delimiter
+
+                file.seek(0)
+                return pd.read_csv(
+                    file,
+                    sep=sep_detected,
+                    encoding=enc,
+                    engine="python",      # parseur permissif
+                    on_bad_lines="skip",  # ignore lignes corrompues
+                )
+            except (UnicodeDecodeError, csv.Error, pd.errors.ParserError):
+                file.seek(0)  # ré-initialise le curseur et tente encodage suivant
+
+        st.error(f"{file.name} : encodage ou séparateur non reconnu.")
+        return None
+
+    # ---------- Excel ----------
     elif name.endswith((".xlsx", ".xls")):
         try:
             return pd.read_excel(file, engine="openpyxl")
         except ImportError:
             st.error("openpyxl manquant (ajoutez-le au requirements).")
-    else:
-        st.error(f"{file.name} : format non pris en charge.")
+            return None
+
+    # ---------- Autre format ----------
+    st.error(f"{file.name} : format non pris en charge.")
     return None
 
 
