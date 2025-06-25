@@ -15,7 +15,7 @@ st.button("🗑️ CLEAR", on_click=clear_and_rerun)
 st.title("🧩 Classification Code")
 
 @st.cache_data(show_spinner=False)
-def read_csv_smart(buf: io.BytesIO) -> pd.DataFrame:
+def read_csv(buf: io.BytesIO) -> pd.DataFrame:
     for enc in ("utf-8", "latin1", "cp1252"):
         buf.seek(0)
         try:
@@ -31,7 +31,7 @@ def read_csv_smart(buf: io.BytesIO) -> pd.DataFrame:
 def read_any(u):
     n = u.name.lower()
     if n.endswith(".csv"):
-        return read_csv_smart(u)
+        return read_csv(u)
     if n.endswith((".xlsx", ".xls")):
         return pd.read_excel(u, engine="openpyxl")
     return None
@@ -54,27 +54,28 @@ def safe_merge(l: pd.DataFrame, r: pd.DataFrame) -> pd.DataFrame:
     return l.merge(r.rename(columns=dup), on="RéférenceProduit", how="outer")
 
 def build_dfrx(df: pd.DataFrame, ent: str) -> pd.DataFrame:
-    return pd.DataFrame({"M2": df["M2_nouveau"],"Entreprise": ent,"Code_famille_Client": df["Code_famille_Client"]}).drop_duplicates()
+    return pd.DataFrame({"M2": df["M2_nouveau"], "Entreprise": ent, "Code_famille_Client": df["Code_famille_Client"]}).drop_duplicates()
 
 lots = {"cat": ("Catalogue interne", "idx Réf. produit", "idx M2 actuelle"),
         "hist": ("Historique",       "idx Réf. produit", "idx M2 dernière"),
-        "cli":  ("Fichier client",   "idx M2", "idx Code famille")}
+        "cli":  ("Fichier client",   "idx M2",           "idx Code famille")}
+
 for k in lots:
     st.session_state.setdefault(f"{k}_dfs", [])
     st.session_state.setdefault(f"{k}_names", [])
 
 cols = st.columns(3)
-for (k, (label, lab1, lab2)), c in zip(lots.items(), cols):
+for (k, (lab, lab1, lab2)), c in zip(lots.items(), cols):
     with c:
-        st.markdown(f"##### {label}")
+        st.markdown(f"##### {lab}")
         up = st.file_uploader("Drag & drop", accept_multiple_files=True,
-                              type=("csv","xlsx","xls"), key=f"up_{k}")
+                              type=("csv", "xlsx", "xls"), key=f"up_{k}")
         if up:
             for f in up:
                 if f.name not in st.session_state[f"{k}_names"]:
-                    d = read_any(f)
-                    if d is not None:
-                        st.session_state[f"{k}_dfs"].append(d)
+                    df_read = read_any(f)
+                    if df_read is not None:
+                        st.session_state[f"{k}_dfs"].append(df_read)
                         st.session_state[f"{k}_names"].append(f.name)
             st.success(f"{len(up)} ajouté(s)")
         st.number_input(lab1, 1, 50, 1, key=f"{k}_ref", label_visibility="collapsed")
@@ -83,38 +84,44 @@ for (k, (label, lab1, lab2)), c in zip(lots.items(), cols):
 
 entreprise = st.text_input("Entreprise (MAJUSCULES)").strip().upper()
 
+def idx_ok(df: pd.DataFrame, idx: int) -> bool:
+    return 1 <= idx <= df.shape[1]
+
 if st.button("Fusionner Étape 1"):
-    if not all(st.session_state[f"{k}_dfs"] for k in ("cat","hist","cli")) or not entreprise:
-        st.warning("Charger 3 lots + Entreprise"); st.stop()
+    if not all(st.session_state[f"{k}_dfs"] for k in lots) or not entreprise:
+        st.warning("Charger les trois lots et renseigner l’entreprise"); st.stop()
 
-    cat  = concat_unique(st.session_state["cat_dfs"])
-    hist = concat_unique(st.session_state["hist_dfs"])
-    cli  = concat_unique(st.session_state["cli_dfs"])
+    cat_raw  = concat_unique(st.session_state["cat_dfs"])
+    hist_raw = concat_unique(st.session_state["hist_dfs"])
+    cli_raw  = concat_unique(st.session_state["cli_dfs"])
 
-    cat  = add_cols(cat,  st.session_state["cat_ref"],  st.session_state["cat_val"],  "M2_nouveau")
-    hist = add_cols(hist, st.session_state["hist_ref"], st.session_state["hist_val"], "M2_ancien")
+    for df_raw, key in ((cat_raw, "cat"), (hist_raw, "hist"), (cli_raw, "cli")):
+        if not idx_ok(df_raw, st.session_state[f"{key}_ref"]) or not idx_ok(df_raw, st.session_state[f"{key}_val"]):
+            st.error(f"Index hors limite pour le lot {key.upper()}"); st.stop()
 
-    cli_m2 = cli.copy()
+    cat  = add_cols(cat_raw,  st.session_state["cat_ref"],  st.session_state["cat_val"],  "M2_nouveau")
+    hist = add_cols(hist_raw, st.session_state["hist_ref"], st.session_state["hist_val"], "M2_ancien")
+
+    cli_m2 = cli_raw.copy()
     cli_m2["M2"] = to_m2_series(cli_m2.iloc[:, st.session_state["cli_ref"] - 1])
     cli_m2["Code_famille_Client"] = cli_m2.iloc[:, st.session_state["cli_val"] - 1].astype(str)
     cli_m2 = cli_m2[["M2", "Code_famille_Client"]]
 
-    merged = safe_merge(cat, hist[["RéférenceProduit","M2_ancien"]])
+    merged = safe_merge(cat, hist[["RéférenceProduit", "M2_ancien"]])
     merged = merged.merge(cli_m2, left_on="M2_ancien", right_on="M2", how="left")
     merged.drop(columns=["M2"], inplace=True)
 
     pre_assigned = merged["Code_famille_Client"].notna().sum()
 
-    freq = (merged.dropna(subset=["Code_famille_Client"]).groupby("M2_nouveau")
-            ["Code_famille_Client"].agg(lambda s: s.value_counts().idxmax()))
+    freq = (merged.dropna(subset=["Code_famille_Client"])
+            .groupby("M2_nouveau")["Code_famille_Client"]
+            .agg(lambda s: s.value_counts().idxmax()))
     merged["Code_famille_Client"] = merged.apply(
-        lambda r: freq.get(r["M2_nouveau"], pd.NA) if pd.isna(r["Code_famille_Client"]) else r["Code_famille_Client"], axis=1)
+        lambda r: freq.get(r["M2_nouveau"], pd.NA) if pd.isna(r["Code_famille_Client"]) else r["Code_famille_Client"],
+        axis=1)
+    completed = merged["Code_famille_Client"].notna().sum() - pre_assigned
 
-    after_assigned = merged["Code_famille_Client"].notna().sum()
-    completed = after_assigned - pre_assigned
-
-    maj_list = [f"{m2} -> {code}" for m2, code in freq.items() if m2 in merged["M2_nouveau"].values]
-
+    maj_list = [f"{m2} -> {code}" for m2, code in freq.items()]
     missing_final = merged[merged["Code_famille_Client"].isna()]["M2_nouveau"].unique()
 
     summary_txt = "\n".join([
@@ -128,7 +135,9 @@ if st.button("Fusionner Étape 1"):
 
     final_df = build_dfrx(merged.drop_duplicates("M2_nouveau"), entreprise)
     dstr = datetime.today().strftime("%y%m%d")
+
     st.dataframe(final_df.head())
     st.download_button("⬇️ Résultat CSV", final_df.to_csv(index=False, sep=";"),
                        file_name=f"CODES_FINAUX_{dstr}.csv", mime="text/csv")
-    st.download_button("⬇️ Suivi TXT", summary_txt, file_name=f"SUIVI_{dstr}.txt", mime="text/plain")
+    st.download_button("⬇️ Suivi TXT", summary_txt,
+                       file_name=f"SUIVI_{dstr}.txt", mime="text/plain")
