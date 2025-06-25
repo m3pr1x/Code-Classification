@@ -38,102 +38,99 @@ def read_any(u):
 
 @st.cache_data(show_spinner=False)
 def concat_unique(lst):
-    return (pd.concat(lst, ignore_index=True).drop_duplicates().reset_index(drop=True) if lst else pd.DataFrame())
+    return pd.concat(lst, ignore_index=True).drop_duplicates().reset_index(drop=True) if lst else pd.DataFrame()
 
-def rename_keep(df, i_ref, i_val, new_val):
-    m = {df.columns[i_ref-1]: "RéférenceProduit", df.columns[i_val-1]: new_val}
-    return df.rename(columns=m)[list(m.values())]
+def add_cols(df: pd.DataFrame, ref_idx: int, m2_idx: int, label: str) -> pd.DataFrame:
+    ref_col = df.columns[ref_idx - 1]
+    m2_col  = df.columns[m2_idx - 1]
+    out = df.copy()
+    if "RéférenceProduit" not in out.columns:
+        out["RéférenceProduit"] = out[ref_col]
+    if label not in out.columns:
+        out[label] = out[m2_col]
+    return out
 
-def build_dfrx(df, ent):
-    return pd.DataFrame({"Code famille Client": df["Code_famille_Client"],"onsenfou": None,"Entreprises": ent,"M2": "M2_" + df["RéférenceProduit"].astype(str)}).drop_duplicates()
+def safe_merge(l: pd.DataFrame, r: pd.DataFrame) -> pd.DataFrame:
+    dup = {c: f"{c}_nouveau" for c in r.columns if c in l.columns and c != "RéférenceProduit"}
+    return l.merge(r.rename(columns=dup), on="RéférenceProduit", how="outer")
 
-lots = {"cat": ("Catalogue interne", "idx Réf.", "idx M2 actuelle"),"hist": ("Historique", "idx Réf.", "idx M2 dernière"),"cli": ("Fichier client", "idx Réf.", "idx Code famille")}
+def build_dfrx(df: pd.DataFrame, ent: str) -> pd.DataFrame:
+    return pd.DataFrame({"M2": df["M2_nouveau"],"Entreprise": ent,"Code_famille_Client": df["Code_famille_Client"]}).drop_duplicates()
+
+lots = {"cat": ("Catalogue interne", "idx Réf. produit", "idx M2 actuelle"),
+        "hist": ("Historique",       "idx Réf. produit", "idx M2 dernière"),
+        "cli":  ("Fichier client",   "idx M2", "idx Code famille")}
 for k in lots:
     st.session_state.setdefault(f"{k}_dfs", [])
     st.session_state.setdefault(f"{k}_names", [])
 
 cols = st.columns(3)
-for (k, (lab, rlab, vlab)), c in zip(lots.items(), cols):
+for (k, (label, lab1, lab2)), c in zip(lots.items(), cols):
     with c:
-        st.markdown(f"##### {lab}")
-        files = st.file_uploader("Drag & drop", accept_multiple_files=True, type=("csv", "xlsx", "xls"), key=f"up_{k}")
-        if files:
-            for f in files:
+        st.markdown(f"##### {label}")
+        up = st.file_uploader("Drag & drop", accept_multiple_files=True, type=("csv","xlsx","xls"), key=f"up_{k}")
+        if up:
+            for f in up:
                 if f.name not in st.session_state[f"{k}_names"]:
                     d = read_any(f)
                     if d is not None:
                         st.session_state[f"{k}_dfs"].append(d)
                         st.session_state[f"{k}_names"].append(f.name)
-            st.success(f"{len(files)} ajouté")
-        st.number_input(rlab, 1, 50, 1, key=f"{k}_ref", label_visibility="collapsed")
-        st.number_input(vlab, 1, 50, 2, key=f"{k}_val", label_visibility="collapsed")
+            st.success(f"{len(up)} ajouté(s)")
+        st.number_input(lab1, 1, 50, 1, key=f"{k}_ref", label_visibility="collapsed")
+        st.number_input(lab2, 1, 50, 2, key=f"{k}_val", label_visibility="collapsed")
         st.caption(f"{len(st.session_state[f'{k}_dfs'])} fichier(s)")
 
 entreprise = st.text_input("Entreprise (MAJUSCULES)").strip().upper()
 
 if st.button("Fusionner Étape 1"):
-    if not all(st.session_state[f"{k}_dfs"] for k in lots) or not entreprise:
-        st.stop()
-    raw_cat  = concat_unique(st.session_state["cat_dfs"])
-    raw_hist = concat_unique(st.session_state["hist_dfs"])
-    raw_cli  = concat_unique(st.session_state["cli_dfs"])
-    d1 = rename_keep(raw_cat,  st.session_state["cat_ref"],  st.session_state["cat_val"],  "M2_annee_actuelle")
-    d2 = rename_keep(raw_hist, st.session_state["hist_ref"], st.session_state["hist_val"], "M2_annee_derniere")
-    d3 = rename_keep(raw_cli,  st.session_state["cli_ref"],  st.session_state["cli_val"],  "Code_famille_Client")
-    dff = reduce(lambda l, r: l.merge(r, on="RéférenceProduit", how="outer"), (d1, d2, d3))
-    dff["Entreprise"] = entreprise
-    missing = dff[dff["Code_famille_Client"].isna()]
+    if not all(st.session_state[f"{k}_dfs"] for k in ("cat","hist","cli")) or not entreprise:
+        st.warning("Charger 3 lots + Entreprise"); st.stop()
+
+    cat  = concat_unique(st.session_state["cat_dfs"])
+    hist = concat_unique(st.session_state["hist_dfs"])
+    cli  = concat_unique(st.session_state["cli_dfs"])
+
+    cat  = add_cols(cat,  st.session_state["cat_ref"],  st.session_state["cat_val"],  "M2_nouveau")
+    hist = add_cols(hist, st.session_state["hist_ref"], st.session_state["hist_val"], "M2_ancien")
+
+    cli_m2 = cli.copy()
+    cli_m2["M2"] = cli_m2.iloc[:, st.session_state["cli_ref"] - 1]
+    cli_m2["Code_famille_Client"] = cli_m2.iloc[:, st.session_state["cli_val"] - 1]
+    cli_m2 = cli_m2[["M2", "Code_famille_Client"]]
+
+    merged = safe_merge(cat, hist[["RéférenceProduit","M2_ancien"]])
+    merged = merged.merge(cli_m2, left_on="M2_ancien", right_on="M2", how="left")
+    merged.drop(columns=["M2"], inplace=True)
+
+    pre_assigned = merged["Code_famille_Client"].notna().sum()
+
+    freq = (merged.dropna(subset=["Code_famille_Client"]).groupby("M2_nouveau")
+            ["Code_famille_Client"].agg(lambda s: s.value_counts().idxmax()))
+    merged["Code_famille_Client"] = merged.apply(
+        lambda r: freq.get(r["M2_nouveau"], pd.NA) if pd.isna(r["Code_famille_Client"]) else r["Code_famille_Client"], axis=1)
+
+    after_assigned = merged["Code_famille_Client"].notna().sum()
+    completed = after_assigned - pre_assigned
+
+    maj_applied = merged.groupby("M2_nouveau")["Code_famille_Client"].first()
+    maj_list = [f"{m2} -> {code}" for m2, code in freq.items() if m2 in maj_applied.index]
+
+    missing_final = merged[merged["Code_famille_Client"].isna()]["M2_nouveau"].unique()
+
+    summary = [
+        f"M2 avec code initial : {pre_assigned}",
+        f"M2 complétés par majorité : {completed}",
+        "\nListe des M2 complétés :",
+        *maj_list,
+        "\nM2 restants sans code :",
+        *missing_final.astype(str)
+    ]
+    summary_txt = "\n".join(summary)
+
+    final_df = build_dfrx(merged.drop_duplicates("M2_nouveau"), entreprise)
     dstr = datetime.today().strftime("%y%m%d")
-    st.session_state.update(dff_df=dff,missing_df=missing,dff_csv=dff.to_csv(index=False, sep=";").encode(),dstr=dstr,ent=entreprise,missing_file=None)
-    st.success("Fusion OK")
-
-mis = st.session_state.get("missing_df")
-if mis is not None and not mis.empty:
-    avail = [c for c in mis.columns if c not in ("Code_famille_Client", "Entreprise")]
-    sel = st.multiselect("Colonnes pour le client", avail)
-    if st.button("Excel client"):
-        out = mis[["RéférenceProduit"]+sel].drop_duplicates()
-        out.insert(1,"Code_famille_Client","")
-        b = io.BytesIO(); out.to_excel(b,index=False, engine="openpyxl"); b.seek(0)
-        st.session_state["missing_file"] = b
-        st.success("Fichier prêt")
-
-dff = st.session_state.get("dff_df")
-if dff is not None:
-    st.dataframe(dff.head(100))
-    st.download_button("⬇️ DFF", st.session_state["dff_csv"], file_name=f"DFF_{st.session_state.ent}_{st.session_state.dstr}.csv", mime="text/csv")
-    if st.session_state.get("missing_file"):
-        st.download_button("⬇️ Excel client", st.session_state["missing_file"], file_name=f"CODES_CLIENT_{st.session_state.ent}_{st.session_state.dstr}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-st.header("Étape 2 : retour client")
-
-dff_file = st.file_uploader("DFF initial", type="csv")
-maj_files = st.file_uploader("Retour client", accept_multiple_files=True, type=("csv","xlsx","xls"))
-
-if st.button("Fusionner Étape 2"):
-    if not (dff_file and maj_files):
-        st.stop()
-    dff_init = pd.read_csv(dff_file, sep=";")
-    lst = [read_any(f) for f in maj_files if read_any(f) is not None]
-    if not lst:
-        st.stop()
-    maj = pd.concat(lst).iloc[:, :2]
-    if maj.columns[1] != "Code_famille_Client":
-        maj.columns = ["RéférenceProduit", "Code_famille_Client"]
-    maj = maj.drop_duplicates()
-    dff_fin = dff_init.merge(maj, on="RéférenceProduit", how="left", suffixes=("","_m"))
-    dff_fin["Code_famille_Client"].fillna(dff_fin["Code_famille_Client_m"], inplace=True)
-    dff_fin.drop(columns=["Code_famille_Client_m"], inplace=True)
-    ent_out = dff_fin["Entreprise"].dropna().unique()[0] if "Entreprise" in dff_fin.columns else ""
-    dfrx = build_dfrx(dff_fin[dff_fin["Code_famille_Client"].notna()], ent_out)
-    dstr = datetime.today().strftime("%y%m%d")
-    st.dataframe(dfrx.head())
-    st.download_button("⬇️ DFRX", dfrx.to_csv(sep="\t", index=False, header=False), file_name=f"DFRXHYBRCMR{dstr}0000", mime="text/plain")
-    ack = f"DFRXHYBRCMR{dstr}000068230116ITDFRXHYBRCMR{dstr}RCMRHYBFRX                    OK000000"
-    st.download_button("⬇️ TXT", ack, file_name=f"AFRXHYBRCMR{dstr}0000.txt", mime="text/plain")
-    miss = dff_fin[dff_fin["Code_famille_Client"].isna()]
-    if not miss.empty:
-        st.dataframe(miss)
-        st.download_button("⬇️ Missing", miss.to_csv(index=False, sep=";").encode(), file_name=f"CODES_MANQUANTS_{dstr}.csv", mime="text/csv")
-    else:
-        st.success("Tous les codes client sont renseignés.")
+    st.dataframe(final_df.head())
+    st.download_button("⬇️ Résultat CSV", final_df.to_csv(index=False, sep=";"),
+                       file_name=f"CODES_FINAUX_{dstr}.csv", mime="text/csv")
+    st.download_button("⬇️ Suivi TXT", summary_txt, file_name=f"SUIVI_{dstr}.txt", mime="text/plain")
