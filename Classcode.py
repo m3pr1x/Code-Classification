@@ -40,14 +40,13 @@ def read_any(u):
 def concat_unique(lst):
     return pd.concat(lst, ignore_index=True).drop_duplicates().reset_index(drop=True) if lst else pd.DataFrame()
 
+def to_m2_series(s: pd.Series) -> pd.Series:
+    return s.astype(str).str.zfill(6)
+
 def add_cols(df: pd.DataFrame, ref_idx: int, m2_idx: int, label: str) -> pd.DataFrame:
-    ref_col = df.columns[ref_idx - 1]
-    m2_col  = df.columns[m2_idx - 1]
     out = df.copy()
-    if "RéférenceProduit" not in out.columns:
-        out["RéférenceProduit"] = out[ref_col]
-    if label not in out.columns:
-        out[label] = out[m2_col]
+    out["RéférenceProduit"] = out.iloc[:, ref_idx - 1].astype(str)
+    out[label] = to_m2_series(out.iloc[:, m2_idx - 1])
     return out
 
 def safe_merge(l: pd.DataFrame, r: pd.DataFrame) -> pd.DataFrame:
@@ -68,7 +67,8 @@ cols = st.columns(3)
 for (k, (label, lab1, lab2)), c in zip(lots.items(), cols):
     with c:
         st.markdown(f"##### {label}")
-        up = st.file_uploader("Drag & drop", accept_multiple_files=True, type=("csv","xlsx","xls"), key=f"up_{k}")
+        up = st.file_uploader("Drag & drop", accept_multiple_files=True,
+                              type=("csv","xlsx","xls"), key=f"up_{k}")
         if up:
             for f in up:
                 if f.name not in st.session_state[f"{k}_names"]:
@@ -95,8 +95,8 @@ if st.button("Fusionner Étape 1"):
     hist = add_cols(hist, st.session_state["hist_ref"], st.session_state["hist_val"], "M2_ancien")
 
     cli_m2 = cli.copy()
-    cli_m2["M2"] = cli_m2.iloc[:, st.session_state["cli_ref"] - 1]
-    cli_m2["Code_famille_Client"] = cli_m2.iloc[:, st.session_state["cli_val"] - 1]
+    cli_m2["M2"] = to_m2_series(cli_m2.iloc[:, st.session_state["cli_ref"] - 1])
+    cli_m2["Code_famille_Client"] = cli_m2.iloc[:, st.session_state["cli_val"] - 1].astype(str)
     cli_m2 = cli_m2[["M2", "Code_famille_Client"]]
 
     merged = safe_merge(cat, hist[["RéférenceProduit","M2_ancien"]])
@@ -113,20 +113,18 @@ if st.button("Fusionner Étape 1"):
     after_assigned = merged["Code_famille_Client"].notna().sum()
     completed = after_assigned - pre_assigned
 
-    maj_applied = merged.groupby("M2_nouveau")["Code_famille_Client"].first()
-    maj_list = [f"{m2} -> {code}" for m2, code in freq.items() if m2 in maj_applied.index]
+    maj_list = [f"{m2} -> {code}" for m2, code in freq.items() if m2 in merged["M2_nouveau"].values]
 
     missing_final = merged[merged["Code_famille_Client"].isna()]["M2_nouveau"].unique()
 
-    summary = [
+    summary_txt = "\n".join([
         f"M2 avec code initial : {pre_assigned}",
         f"M2 complétés par majorité : {completed}",
         "\nListe des M2 complétés :",
         *maj_list,
         "\nM2 restants sans code :",
         *missing_final.astype(str)
-    ]
-    summary_txt = "\n".join(summary)
+    ])
 
     final_df = build_dfrx(merged.drop_duplicates("M2_nouveau"), entreprise)
     dstr = datetime.today().strftime("%y%m%d")
