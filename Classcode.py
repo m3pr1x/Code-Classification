@@ -107,9 +107,21 @@ if st.button("Fusionner Étape 1"):
     cli_m2["Code_famille_Client"] = cli_m2.iloc[:, st.session_state["cli_val"] - 1].astype(str)
     cli_m2 = cli_m2[["M2", "Code_famille_Client"]]
 
+    # ---------- MERGE n°1 (catalogue + historique) ----------
     merged = safe_merge(cat, hist[["RéférenceProduit", "M2_ancien"]])
-    merged = merged.merge(cli_m2, left_on="M2_ancien", right_on="M2", how="left")
-    merged.drop(columns=["M2"], inplace=True)
+
+    # ---------- MERGE n°2 (historique + fichier client) ----------
+    merged = merged.merge(
+        cli_m2,
+        left_on="M2_ancien",
+        right_on="M2",
+        how="left",
+        suffixes=("_cat", "")   # <‑ on gère le doublon "M2"
+    )
+
+    # On retire la colonne M2 du catalogue (devenue "M2_cat")
+    if "M2_cat" in merged.columns:
+        merged.drop(columns=["M2_cat"], inplace=True)
 
     pre_assigned = merged["Code_famille_Client"].notna().sum()
 
